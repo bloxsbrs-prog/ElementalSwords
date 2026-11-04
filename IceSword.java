@@ -1,117 +1,302 @@
 package com.example.elementalswords;
 
-import org.bukkit.FluidCollisionMode;
-import org.bukkit.GameMode;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.Particle;
+import org.bukkit.Sound;
 import org.bukkit.World;
-import org.bukkit.entity.ArmorStand;
+import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
+import org.bukkit.block.BlockState;
+import org.bukkit.block.data.Levelled;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
-import org.bukkit.inventory.EntityEquipment;
+import org.bukkit.entity.Snowball;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.block.BlockFormEvent;
+import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.util.RayTraceResult;
+import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
+import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.Vector;
 
-import java.util.ArrayList;
 import java.util.List;
 
-/** Small helpers shared by all the swords. */
-final class Util {
+/** Frost Sword: freezing hits, Frost Volley, Frost Nova, Blizzard Shield and Absolute Zero. */
+final class IceSword extends ElementSword {
 
-    private Util() {}
+    // ---- Tweak these (20 damage = 10 hearts) ----
+    private static final int HIT_SLOW_TICKS = 60;             // Slowness II for 3 seconds
+    private static final int HIT_FREEZE_TICKS = 140;
 
-    /** True if the target is wearing at least one piece of armor. */
-    static boolean hasArmor(LivingEntity target) {
-        EntityEquipment equipment = target.getEquipment();
-        if (equipment == null) return false;
-        for (ItemStack piece : equipment.getArmorContents()) {
-            if (piece != null && !piece.getType().isAir()) return true;
-        }
-        return false;
+    // Frost Volley (right-click air): 5 ice shards
+    private static final long VOLLEY_COOLDOWN_MS = 3000;
+    private static final int VOLLEY_COUNT = 5;
+    private static final double VOLLEY_SPREAD_DEGREES = 7;
+    private static final double VOLLEY_DAMAGE = 8.0;          // 4 hearts per shard
+
+    // Frost Nova (right-click ground)
+    private static final long NOVA_COOLDOWN_MS = 8000;
+    private static final double NOVA_RADIUS = 5.0;
+    private static final double NOVA_DAMAGE = 10.0;           // 5 hearts
+
+    // Blizzard Shield (sneak + right-click)
+    private static final int SHIELD_TICKS = 200;              // 10 seconds
+    private static final long SHIELD_COOLDOWN_MS = 20000;
+    private static final double SHIELD_RADIUS = 4.0;
+    private static final double SHIELD_DAMAGE = 10.0;         // 5 hearts, twice a second
+    private static final int SHIELD_INTERVAL_TICKS = 10;
+
+    // Absolute Zero (sneak + hit)
+    private static final long ZERO_COOLDOWN_MS = 90000;       // 1 minute 30 seconds
+    private static final double ZERO_DAMAGE = 30.0;           // 15 hearts
+    private static final double ZERO_RANGE = 30.0;
+    private static final double ZERO_WIDTH = 1.75;
+
+    private final NamespacedKey shardKey;
+
+    IceSword(ElementalSwordsPlugin plugin) {
+        super(plugin, SwordType.ICE);
+        this.shardKey = new NamespacedKey(plugin, "frost_shard");
     }
 
-    /** Something an ability is allowed to hurt: a living thing that isn't the caster, an armor stand or a spectator. */
-    static boolean isTarget(Entity e, Player caster) {
-        if (!(e instanceof LivingEntity)) return false;
-        if (e instanceof ArmorStand) return false;
-        if (e.isDead()) return false;
-        if (caster != null && e.getUniqueId().equals(caster.getUniqueId())) return false;
-        if (e instanceof Player p && p.getGameMode() == GameMode.SPECTATOR) return false;
-        return true;
+    @Override
+    List<Component> lore() {
+        return List.of(
+                line("Hits slow and freeze enemies", NamedTextColor.AQUA),
+                line("Right-click air: Frost Volley (5 ice shards)", NamedTextColor.YELLOW),
+                line("Right-click ground: Frost Nova", NamedTextColor.YELLOW),
+                line("Sneak + right-click: Blizzard Shield", NamedTextColor.AQUA),
+                line("Sneak + hit: Absolute Zero (1m 30s cooldown)", NamedTextColor.BLUE));
     }
 
-    /** Everything an ability may hurt within r blocks of a point (measured to the middle of the body). */
-    static List<LivingEntity> inRadius(Location center, double r, Player caster) {
-        List<LivingEntity> out = new ArrayList<>();
-        World world = center.getWorld();
-        for (Entity e : world.getNearbyEntities(center, r, r, r)) {
-            if (!isTarget(e, caster)) continue;
-            LivingEntity target = (LivingEntity) e;
-            if (target.getBoundingBox().getCenter().distance(center.toVector()) > r) continue;
-            out.add(target);
-        }
-        return out;
+    private void chill(LivingEntity target, int slowTicks, int slowLevel, int freezeTicks) {
+        target.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS, slowTicks, slowLevel));
+        target.setFreezeTicks(Math.max(target.getFreezeTicks(), freezeTicks));
     }
 
-    /** How far a beam from the player's eyes goes before it hits a solid wall. */
-    static double beamRange(Player player, double max) {
+    @Override
+    void onHit(Player player, LivingEntity victim) {
+        chill(victim, HIT_SLOW_TICKS, 1, HIT_FREEZE_TICKS);
+        World world = victim.getWorld();
+        world.spawnParticle(Particle.SNOWFLAKE, victim.getLocation().add(0, 1, 0), 25, 0.3, 0.5, 0.3, 0.02);
+        world.playSound(victim.getLocation(), Sound.BLOCK_GLASS_BREAK, 0.8f, 1.5f);
+    }
+
+    // ---------------------------------------------------------------- frost volley
+
+    @Override
+    void primary(Player player) {
+        if (!plugin.cooldowns().tryUse(player, "ice:volley", VOLLEY_COOLDOWN_MS, "Frost Volley")) return;
+
         Location eye = player.getEyeLocation();
-        RayTraceResult wall = player.getWorld().rayTraceBlocks(eye, eye.getDirection(), max, FluidCollisionMode.NEVER, true);
-        return wall != null ? wall.getHitPosition().distance(eye.toVector()) : max;
+        Vector direction = eye.getDirection().normalize();
+
+        for (int i = 0; i < VOLLEY_COUNT; i++) {
+            double slot = i - (VOLLEY_COUNT - 1) / 2.0;
+            Vector aim = direction.clone().rotateAroundY(Math.toRadians(slot * VOLLEY_SPREAD_DEGREES));
+            Location spawnAt = eye.clone().add(direction.clone().multiply(1.2));
+
+            player.getWorld().spawn(spawnAt, Snowball.class, shard -> {
+                shard.setShooter(player);
+                shard.setItem(new ItemStack(Material.BLUE_ICE));   // looks like a flying ice chunk
+                shard.setVelocity(aim.clone().multiply(1.9));
+                shard.getPersistentDataContainer().set(shardKey, PersistentDataType.BYTE, (byte) 1);
+            });
+        }
+        player.getWorld().playSound(player.getLocation(), Sound.ENTITY_SNOW_GOLEM_SHOOT, 1.2f, 0.7f);
     }
 
-    /** Everything inside a straight beam from the player's eyes (it pierces). */
-    static List<LivingEntity> inBeam(Player player, double range, double width) {
+    @EventHandler
+    public void onShardHit(ProjectileHitEvent event) {
+        if (!(event.getEntity() instanceof Snowball shard)) return;
+        if (!shard.getPersistentDataContainer().has(shardKey, PersistentDataType.BYTE)) return;
+
+        Player shooter = shard.getShooter() instanceof Player p ? p : null;
+
+        Entity hit = event.getHitEntity();
+        if (hit != null && !Util.isTarget(hit, shooter)) {
+            event.setCancelled(true);   // fly through the shooter, armor stands, etc.
+            return;
+        }
+
+        Location loc = shard.getLocation();
+        World world = loc.getWorld();
+        shard.remove();
+
+        world.spawnParticle(Particle.SNOWFLAKE, loc, 25, 0.3, 0.3, 0.3, 0.05);
+        world.spawnParticle(Particle.BLOCK, loc, 20, 0.3, 0.3, 0.3, Material.ICE.createBlockData());
+        world.playSound(loc, Sound.BLOCK_GLASS_BREAK, 1f, 1.4f);
+
+        if (hit instanceof LivingEntity target) {
+            chill(target, 60, 1, 140);
+            plugin.abilityDamage(target, VOLLEY_DAMAGE, shooter);
+        }
+    }
+
+    // ---------------------------------------------------------------- frost nova
+
+    @Override
+    void ground(Player player, Block clicked, BlockFace face) {
+        if (clicked == null) return;
+        if (!plugin.cooldowns().tryUse(player, "ice:nova", NOVA_COOLDOWN_MS, "Frost Nova")) return;
+
+        Location center = clicked.getRelative(face).getLocation().add(0.5, 0.2, 0.5);
+        World world = center.getWorld();
+
+        // Expanding ring of snow
+        new BukkitRunnable() {
+            int step = 0;
+
+            @Override
+            public void run() {
+                double r = (step + 1) * NOVA_RADIUS / 8.0;
+                for (int i = 0; i < 36; i++) {
+                    double a = i * (Math.PI * 2 / 36);
+                    world.spawnParticle(Particle.SNOWFLAKE,
+                            center.getX() + Math.cos(a) * r, center.getY(), center.getZ() + Math.sin(a) * r,
+                            1, 0.05, 0.05, 0.05, 0.02);
+                }
+                step++;
+                if (step >= 8) cancel();
+            }
+        }.runTaskTimer(plugin, 0L, 1L);
+
+        world.playSound(center, Sound.BLOCK_GLASS_BREAK, 2f, 0.7f);
+        world.playSound(center, Sound.ENTITY_PLAYER_HURT_FREEZE, 2f, 0.8f);
+
+        for (LivingEntity target : Util.inRadius(center, NOVA_RADIUS, player)) {
+            chill(target, 80, 2, 200);
+            plugin.abilityDamage(target, NOVA_DAMAGE, player);
+        }
+        freezeWater(center, (int) NOVA_RADIUS);
+    }
+
+    /** Turns still water near the nova into frosted ice (it melts back on its own). */
+    private void freezeWater(Location center, int radius) {
+        World world = center.getWorld();
+        int cx = center.getBlockX(), cy = center.getBlockY(), cz = center.getBlockZ();
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                if (dx * dx + dz * dz > radius * radius) continue;
+                for (int dy = -2; dy <= 1; dy++) {
+                    Block block = world.getBlockAt(cx + dx, cy + dy, cz + dz);
+                    if (block.getType() != Material.WATER) continue;
+                    if (!(block.getBlockData() instanceof Levelled level) || level.getLevel() != 0) continue;
+
+                    BlockState newState = block.getState();
+                    newState.setType(Material.FROSTED_ICE);
+                    BlockFormEvent form = new BlockFormEvent(block, newState);
+                    plugin.getServer().getPluginManager().callEvent(form);   // protection plugins can say no
+                    if (!form.isCancelled()) newState.update(true, false);
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- blizzard shield
+
+    @Override
+    String shieldName() {
+        return "Blizzard Shield";
+    }
+
+    @Override
+    int shieldTicks() {
+        return SHIELD_TICKS;
+    }
+
+    @Override
+    long shieldCooldownMs() {
+        return SHIELD_COOLDOWN_MS;
+    }
+
+    @Override
+    void shieldStart(Player player) {
+        player.addPotionEffect(new PotionEffect(PotionEffectType.RESISTANCE, SHIELD_TICKS + 10, 0, false, false));
+        player.getWorld().playSound(player.getLocation(), Sound.ENTITY_PLAYER_HURT_FREEZE, 1.5f, 0.7f);
+    }
+
+    @Override
+    void shieldEnd(Player player) {
+        player.removePotionEffect(PotionEffectType.RESISTANCE);
+    }
+
+    @Override
+    void shieldTick(Player player, int tick) {
+        Location center = player.getLocation();
+        World world = player.getWorld();
+        double angle = tick * 0.3;
+
+        // Ring of snow on the ground around you
+        for (int i = 0; i < 16; i++) {
+            double a = angle + i * (Math.PI * 2 / 16);
+            world.spawnParticle(Particle.SNOWFLAKE,
+                    center.getX() + Math.cos(a) * SHIELD_RADIUS,
+                    center.getY() + 0.1,
+                    center.getZ() + Math.sin(a) * SHIELD_RADIUS,
+                    1, 0, 0, 0, 0);
+        }
+
+        // Three ice crystals orbiting you
+        for (int i = 0; i < 3; i++) {
+            double a = -angle * 1.5 + i * (Math.PI * 2 / 3);
+            double height = 0.5 + 0.5 * (1 + Math.sin(angle * 2 + i));
+            world.spawnParticle(Particle.END_ROD,
+                    center.getX() + Math.cos(a) * (SHIELD_RADIUS - 0.5),
+                    center.getY() + height,
+                    center.getZ() + Math.sin(a) * (SHIELD_RADIUS - 0.5),
+                    2, 0.1, 0.1, 0.1, 0.01);
+        }
+        world.spawnParticle(Particle.SNOWFLAKE, center.clone().add(0, 1.5, 0), 6,
+                SHIELD_RADIUS / 2, 1.0, SHIELD_RADIUS / 2, 0.01);
+
+        // Freeze and hit everything inside, twice a second
+        if (tick % SHIELD_INTERVAL_TICKS == 0) {
+            for (LivingEntity target : Util.inRadius(center, SHIELD_RADIUS, player)) {
+                chill(target, 60, 3, 200);
+                plugin.abilityDamage(target, SHIELD_DAMAGE, player);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- absolute zero
+
+    @Override
+    void ultimate(Player player) {
+        if (!plugin.cooldowns().tryUse(player, "ice:zero", ZERO_COOLDOWN_MS, "Absolute Zero")) return;
+
         Location eye = player.getEyeLocation();
         Vector dir = eye.getDirection().normalize();
-        Location mid = eye.clone().add(dir.clone().multiply(range / 2));
-        double reach = range / 2 + 2;
-        List<LivingEntity> out = new ArrayList<>();
-        for (Entity e : player.getWorld().getNearbyEntities(mid, reach, reach, reach)) {
-            if (!isTarget(e, player)) continue;
-            LivingEntity target = (LivingEntity) e;
-            Vector toTarget = target.getBoundingBox().getCenter().subtract(eye.toVector());
-            double along = toTarget.dot(dir);
-            if (along < 0 || along > range) continue;
-            double off = toTarget.clone().subtract(dir.clone().multiply(along)).length();
-            if (off > width) continue;
-            out.add(target);
-        }
-        return out;
-    }
-
-    /** The spot on the ground the player is looking at (stops at mobs and walls, drops to the floor if aimed at the sky). */
-    static Location groundTarget(Player player, double range) {
-        Location eye = player.getEyeLocation();
         World world = player.getWorld();
-        RayTraceResult hit = world.rayTrace(eye, eye.getDirection(), range, FluidCollisionMode.NEVER, true, 0.5,
-                e -> isTarget(e, player));
-        if (hit != null) {
-            return hit.getHitPosition().toLocation(world);
+
+        double range = Util.beamRange(player, ZERO_RANGE);
+
+        world.playSound(eye, Sound.ENTITY_WARDEN_SONIC_BOOM, 3f, 1.6f);
+        world.playSound(eye, Sound.BLOCK_GLASS_BREAK, 2f, 0.5f);
+
+        int step = 0;
+        for (double d = 1.0; d <= range; d += 0.5, step++) {
+            Location p = eye.clone().add(dir.clone().multiply(d));
+            world.spawnParticle(Particle.SNOWFLAKE, p, 6, 0.15, 0.15, 0.15, 0.02);
+            if (step % 3 == 0) {
+                world.spawnParticle(Particle.END_ROD, p, 1, 0.1, 0.1, 0.1, 0.01);
+            }
         }
-        Location end = eye.clone().add(eye.getDirection().multiply(range));
-        RayTraceResult ground = world.rayTraceBlocks(end, new Vector(0, -1, 0), 64, FluidCollisionMode.NEVER, true);
-        return ground != null ? ground.getHitPosition().toLocation(world) : end;
-    }
+        Location end = eye.clone().add(dir.clone().multiply(range));
+        world.spawnParticle(Particle.SNOWFLAKE, end, 60, 1.0, 1.0, 1.0, 0.1);
+        world.playSound(end, Sound.ENTITY_PLAYER_HURT_FREEZE, 2f, 0.6f);
 
-    /** A flat (no up/down) direction of length 1; never returns a zero vector. */
-    static Vector flat(Vector v) {
-        Vector f = new Vector(v.getX(), 0, v.getZ());
-        if (f.lengthSquared() < 1.0E-6) return new Vector(0, 0, 1);
-        return f.normalize();
-    }
-
-    /** A line of particles between two points. */
-    static void line(World world, Location from, Location to, Particle particle, double spacing) {
-        Vector v = to.toVector().subtract(from.toVector());
-        double length = v.length();
-        if (length < 0.01) return;
-        v.normalize();
-        for (double d = 0; d <= length; d += spacing) {
-            Location p = from.clone().add(v.clone().multiply(d));
-            world.spawnParticle(particle, p, 1, 0, 0, 0, 0);
+        // Everything along the beam is frozen solid for a few seconds
+        for (LivingEntity target : Util.inBeam(player, range, ZERO_WIDTH)) {
+            chill(target, 100, 6, 300);
+            plugin.abilityDamage(target, ZERO_DAMAGE, player);
         }
     }
 }

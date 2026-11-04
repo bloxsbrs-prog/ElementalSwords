@@ -2,260 +2,285 @@ package com.example.elementalswords;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
-import org.bukkit.Location;
-import org.bukkit.Particle;
-import org.bukkit.Sound;
-import org.bukkit.World;
-import org.bukkit.block.Block;
-import org.bukkit.block.BlockFace;
+import net.kyori.adventure.text.format.TextDecoration;
+import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeModifier;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
+import org.bukkit.damage.DamageSource;
+import org.bukkit.damage.DamageType;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
-import org.bukkit.event.entity.EntityDamageEvent;
-import org.bukkit.potion.PotionEffect;
-import org.bukkit.potion.PotionEffectType;
-import org.bukkit.scheduler.BukkitRunnable;
-import org.bukkit.util.Vector;
+import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.player.PlayerAnimationEvent;
+import org.bukkit.event.player.PlayerAnimationType;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.inventory.EquipmentSlot;
+import org.bukkit.inventory.EquipmentSlotGroup;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.plugin.java.JavaPlugin;
 
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 
-/** Wind Sword: knockback hits, Gale Force, Wind Leap, Cyclone and Tornado. */
-final class WindSword extends ElementSword {
+public final class ElementalSwordsPlugin extends JavaPlugin implements Listener {
 
-    // ---- Tweak these (20 damage = 10 hearts) ----
-    private static final double HIT_PUSH = 1.3;
+    // ---- Stats shared by every sword ----
+    static final double SWORD_ATTACK_DAMAGE = 12.0;   // attack damage on the tooltip (before Sharpness)
+    static final double SWORD_ATTACK_SPEED = 1.6;     // same swing speed as a normal sword
+    static final int SWORD_SHARPNESS = 7;             // Sharpness level (adds +4 damage at level 7)
+    static final double ARMOR_PASS_THROUGH = 0.75;    // armor only stops 25% of ability damage
 
-    // Gale Force (right-click air): a cone of wind throws enemies back
-    private static final long GALE_COOLDOWN_MS = 3000;
-    private static final double GALE_RANGE = 12.0;
-    private static final double GALE_HALF_ANGLE_DEGREES = 35;
-    private static final double GALE_DAMAGE = 8.0;            // 4 hearts
-    private static final double GALE_PUSH = 2.2;
+    private final Map<SwordType, ElementSword> swords = new EnumMap<>(SwordType.class);
+    private final Cooldowns cooldowns = new Cooldowns();
+    private PackServer packServer;
+    private NamespacedKey swordKey;
+    private boolean inAbilityDamage = false;
 
-    // Wind Leap (right-click ground): launches YOU up and forward
-    private static final long LEAP_COOLDOWN_MS = 5000;
-    private static final double LEAP_FORWARD = 0.9;
-    private static final double LEAP_UP = 1.2;
-
-    // Cyclone (sneak + right-click)
-    private static final int CYCLONE_TICKS = 200;            // 10 seconds
-    private static final long CYCLONE_COOLDOWN_MS = 20000;
-    private static final double CYCLONE_RADIUS = 4.0;
-    private static final double CYCLONE_DAMAGE = 8.0;         // 4 hearts, twice a second
-    private static final int CYCLONE_DAMAGE_INTERVAL_TICKS = 10;
-
-    // Tornado (sneak + hit)
-    private static final long TORNADO_COOLDOWN_MS = 90000;    // 1 minute 30 seconds
-    private static final double TORNADO_RANGE = 25.0;
-    private static final int TORNADO_TICKS = 100;            // 5 seconds
-    private static final double TORNADO_RADIUS = 6.0;
-    private static final double TORNADO_DAMAGE = 3.0;         // every half second -> 15 hearts over its life
-    private static final int TORNADO_DAMAGE_INTERVAL_TICKS = 10;
-
-    /** Players who take no fall damage until the given time (after a leap, or while a Cyclone is up). */
-    private final Map<UUID, Long> noFallUntil = new HashMap<>();
-
-    WindSword(ElementalSwordsPlugin plugin) {
-        super(plugin, SwordType.WIND);
+    Cooldowns cooldowns() {
+        return cooldowns;
     }
 
     @Override
-    List<Component> lore() {
-        return List.of(
-                line("Hits blast enemies backwards", NamedTextColor.WHITE),
-                line("Right-click air: Gale Force", NamedTextColor.YELLOW),
-                line("Right-click ground: Wind Leap", NamedTextColor.YELLOW),
-                line("Sneak + right-click: Cyclone", NamedTextColor.AQUA),
-                line("Sneak + hit: Tornado (1m 30s cooldown)", NamedTextColor.DARK_AQUA));
+    public void onEnable() {
+        swordKey = new NamespacedKey(this, "sword_type");
+        saveDefaultConfig();
+
+        swords.put(SwordType.FIRE, new FireSword(this));
+        swords.put(SwordType.ICE, new IceSword(this));
+        swords.put(SwordType.LIGHTNING, new LightningSword(this));
+        swords.put(SwordType.EARTH, new EarthSword(this));
+        swords.put(SwordType.WIND, new WindSword(this));
+
+        getServer().getPluginManager().registerEvents(this, this);
+        for (ElementSword sword : swords.values()) {
+            getServer().getPluginManager().registerEvents(sword, this);
+        }
+
+        packServer = new PackServer(this);
+        packServer.start();
+        getLogger().info("ElementalSwords enabled with " + swords.size() + " swords.");
+    }
+
+    @Override
+    public void onDisable() {
+        if (packServer != null) packServer.stop();
+        for (ElementSword sword : swords.values()) {
+            sword.cleanupAll();
+        }
+    }
+
+    // ---------------------------------------------------------------- commands
+
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        SwordType type = null;
+        boolean all = false;
+        int playerIndex;
+
+        if (label.equalsIgnoreCase("firesword")) {
+            type = SwordType.FIRE;   // old /firesword command still works
+            playerIndex = 0;
+        } else {
+            if (args.length == 0) {
+                sender.sendMessage(Component.text("Usage: /elementalsword <fire|ice|lightning|earth|wind|all> [player]", NamedTextColor.RED));
+                return true;
+            }
+            if (args[0].equalsIgnoreCase("all")) {
+                all = true;
+            } else {
+                type = SwordType.byId(args[0]);
+                if (type == null) {
+                    sender.sendMessage(Component.text("Unknown sword. Choose fire, ice, lightning, earth, wind or all.", NamedTextColor.RED));
+                    return true;
+                }
+            }
+            playerIndex = 1;
+        }
+
+        Player target;
+        if (args.length > playerIndex) {
+            target = getServer().getPlayerExact(args[playerIndex]);
+            if (target == null) {
+                sender.sendMessage(Component.text("Player not found.", NamedTextColor.RED));
+                return true;
+            }
+        } else if (sender instanceof Player p) {
+            target = p;
+        } else {
+            sender.sendMessage(Component.text("Console must specify a player.", NamedTextColor.RED));
+            return true;
+        }
+
+        if (all) {
+            for (SwordType t : SwordType.values()) {
+                target.getInventory().addItem(createSword(t));
+            }
+            target.sendMessage(Component.text("You received all the elemental swords!", NamedTextColor.GOLD));
+        } else {
+            target.getInventory().addItem(createSword(type));
+            target.sendMessage(Component.text("You received the " + type.displayName() + "!", type.color()));
+        }
+        return true;
+    }
+
+    @Override
+    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        List<String> options = new ArrayList<>();
+        boolean oldAlias = alias.equalsIgnoreCase("firesword");
+        int playerIndex = oldAlias ? 0 : 1;
+
+        if (!oldAlias && args.length == 1) {
+            for (SwordType t : SwordType.values()) options.add(t.id());
+            options.add("all");
+        } else if (args.length == playerIndex + 1) {
+            for (Player p : getServer().getOnlinePlayers()) options.add(p.getName());
+        }
+
+        String typed = args.length == 0 ? "" : args[args.length - 1].toLowerCase(Locale.ROOT);
+        options.removeIf(o -> !o.toLowerCase(Locale.ROOT).startsWith(typed));
+        return options;
+    }
+
+    // ---------------------------------------------------------------- item
+
+    ItemStack createSword(SwordType type) {
+        ElementSword sword = swords.get(type);
+        ItemStack item = new ItemStack(Material.DIAMOND_SWORD);
+        ItemMeta meta = item.getItemMeta();
+
+        meta.displayName(Component.text(type.displayName(), type.color(), TextDecoration.BOLD)
+                .decoration(TextDecoration.ITALIC, false));
+        meta.lore(sword.lore());
+        meta.addEnchant(Enchantment.SHARPNESS, SWORD_SHARPNESS, true);
+
+        // Attack damage 12 (player base is 1, so the modifier adds 11) and normal sword swing speed (base 4 - 2.4 = 1.6)
+        meta.addAttributeModifier(Attribute.ATTACK_DAMAGE, new AttributeModifier(
+                new NamespacedKey(this, type.id() + "_sword_damage"), SWORD_ATTACK_DAMAGE - 1.0,
+                AttributeModifier.Operation.ADD_NUMBER, EquipmentSlotGroup.MAINHAND));
+        meta.addAttributeModifier(Attribute.ATTACK_SPEED, new AttributeModifier(
+                new NamespacedKey(this, type.id() + "_sword_speed"), SWORD_ATTACK_SPEED - 4.0,
+                AttributeModifier.Operation.ADD_NUMBER, EquipmentSlotGroup.MAINHAND));
+
+        meta.setEnchantmentGlintOverride(true);
+        meta.setUnbreakable(true);
+        meta.setCustomModelData(type.modelId());   // resource pack swaps in the 3D model
+        meta.getPersistentDataContainer().set(swordKey, PersistentDataType.STRING, type.id());
+
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    /** Which elemental sword (if any) the player is holding. */
+    private ElementSword swordIn(Player player) {
+        ItemStack item = player.getInventory().getItemInMainHand();
+        if (item == null || !item.hasItemMeta()) return null;
+        String id = item.getItemMeta().getPersistentDataContainer().get(swordKey, PersistentDataType.STRING);
+        if (id == null) return null;
+        SwordType type = SwordType.byId(id);
+        return type == null ? null : swords.get(type);
+    }
+
+    // ---------------------------------------------------------------- damage helper
+
+    /**
+     * Ability damage. It uses magic-type damage, which ignores armor, and then takes 25% off
+     * only if the target is wearing armor. So armor never blocks more than 25%.
+     */
+    void abilityDamage(LivingEntity target, double amount, Player attacker) {
+        abilityDamage(target, amount, attacker, false);
+    }
+
+    /** Same as above, but if fullDamage is true armor doesn't reduce it at all. */
+    void abilityDamage(LivingEntity target, double amount, Player attacker, boolean fullDamage) {
+        double dealt = (!fullDamage && Util.hasArmor(target)) ? amount * ARMOR_PASS_THROUGH : amount;
+
+        DamageSource.Builder builder = DamageSource.builder(DamageType.MAGIC);
+        if (attacker != null) {
+            builder.withCausingEntity(attacker).withDirectEntity(attacker);
+        }
+        target.setNoDamageTicks(0);   // every hit lands in full
+        boolean previous = inAbilityDamage;
+        inAbilityDamage = true;       // so our own ability damage doesn't trigger the on-hit effects again
+        try {
+            target.damage(dealt, builder.build());
+        } finally {
+            inAbilityDamage = previous;
+        }
+    }
+
+    // ---------------------------------------------------------------- events
+
+    @EventHandler
+    public void onHit(EntityDamageByEntityEvent event) {
+        if (inAbilityDamage) return;
+        if (!(event.getDamager() instanceof Player player)) return;
+        if (!(event.getEntity() instanceof LivingEntity victim)) return;
+        if (!player.hasPermission("elementalswords.use")) return;
+
+        ElementSword sword = swordIn(player);
+        if (sword == null) return;
+        sword.onHit(player, victim);
     }
 
     @EventHandler
-    public void onFall(EntityDamageEvent event) {
-        if (event.getCause() != EntityDamageEvent.DamageCause.FALL) return;
-        if (!(event.getEntity() instanceof Player player)) return;
-        Long until = noFallUntil.get(player.getUniqueId());
-        if (until != null && System.currentTimeMillis() < until) {
-            event.setCancelled(true);
+    public void onRightClick(PlayerInteractEvent event) {
+        if (event.getHand() != EquipmentSlot.HAND) return;
+        Action action = event.getAction();
+        if (action != Action.RIGHT_CLICK_AIR && action != Action.RIGHT_CLICK_BLOCK) return;
+
+        Player player = event.getPlayer();
+        if (!player.hasPermission("elementalswords.use")) return;
+        ElementSword sword = swordIn(player);
+        if (sword == null) return;
+
+        event.setCancelled(true);
+
+        if (player.isSneaking()) {
+            sword.toggleShield(player);
+        } else if (action == Action.RIGHT_CLICK_BLOCK) {
+            sword.ground(player, event.getClickedBlock(), event.getBlockFace());
+        } else {
+            sword.primary(player);
         }
     }
 
-    private void protectFromFall(Player player, long ms) {
-        noFallUntil.put(player.getUniqueId(), System.currentTimeMillis() + ms);
+    /** Sneak + swing (hitting air, a block or a mob) fires the sword's ultimate. */
+    @EventHandler
+    public void onSwing(PlayerAnimationEvent event) {
+        if (event.getAnimationType() != PlayerAnimationType.ARM_SWING) return;
+
+        Player player = event.getPlayer();
+        if (!player.isSneaking()) return;
+        if (!player.hasPermission("elementalswords.use")) return;
+        ElementSword sword = swordIn(player);
+        if (sword == null) return;
+
+        sword.ultimate(player);
     }
 
-    @Override
-    void onHit(Player player, LivingEntity victim) {
-        Vector push = Util.flat(victim.getLocation().toVector().subtract(player.getLocation().toVector()))
-                .multiply(HIT_PUSH).setY(0.45);
-        // Next tick, so it isn't overwritten by the normal hit knockback
-        plugin.getServer().getScheduler().runTask(plugin, () -> {
-            if (!victim.isDead()) victim.setVelocity(push);
-        });
-        World world = victim.getWorld();
-        world.spawnParticle(Particle.CLOUD, victim.getLocation().add(0, 1, 0), 20, 0.3, 0.4, 0.3, 0.05);
-        world.playSound(victim.getLocation(), Sound.ENTITY_ENDER_DRAGON_FLAP, 1f, 1.5f);
-    }
-
-    // ---------------------------------------------------------------- gale force
-
-    @Override
-    void primary(Player player) {
-        if (!plugin.cooldowns().tryUse(player, "wind:gale", GALE_COOLDOWN_MS, "Gale Force")) return;
-
-        Location eye = player.getEyeLocation();
-        Vector dir = eye.getDirection().normalize();
-        World world = player.getWorld();
-        double cos = Math.cos(Math.toRadians(GALE_HALF_ANGLE_DEGREES));
-
-        world.playSound(eye, Sound.ENTITY_ENDER_DRAGON_FLAP, 2f, 0.8f);
-        world.playSound(eye, Sound.ENTITY_PLAYER_ATTACK_SWEEP, 1.5f, 0.6f);
-
-        // A widening cone of wind
-        double spread = Math.tan(Math.toRadians(GALE_HALF_ANGLE_DEGREES));
-        for (double d = 1.0; d <= GALE_RANGE; d += 1.0) {
-            Location p = eye.clone().add(dir.clone().multiply(d));
-            double w = d * spread * 0.6;
-            world.spawnParticle(Particle.CLOUD, p, 4, w, w, w, 0.05);
-            if (d % 3 == 1) {
-                world.spawnParticle(Particle.SWEEP_ATTACK, p, 1, w * 0.5, w * 0.5, w * 0.5, 0);
-            }
-        }
-
-        for (LivingEntity target : Util.inRadius(eye, GALE_RANGE, player)) {
-            Vector to = target.getBoundingBox().getCenter().subtract(eye.toVector());
-            double length = to.length();
-            if (length < 0.01) continue;
-            if (to.dot(dir) / length < cos) continue;   // outside the cone
-
-            plugin.abilityDamage(target, GALE_DAMAGE, player);
-            target.setVelocity(dir.clone().multiply(GALE_PUSH).setY(0.6));
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        for (ElementSword sword : swords.values()) {
+            sword.cleanup(event.getPlayer());
         }
     }
 
-    // ---------------------------------------------------------------- wind leap
-
-    @Override
-    void ground(Player player, Block clicked, BlockFace face) {
-        if (!plugin.cooldowns().tryUse(player, "wind:leap", LEAP_COOLDOWN_MS, "Wind Leap")) return;
-
-        Vector launch = Util.flat(player.getLocation().getDirection()).multiply(LEAP_FORWARD).setY(LEAP_UP);
-        player.setVelocity(launch);
-        player.addPotionEffect(new PotionEffect(PotionEffectType.SLOW_FALLING, 120, 0, false, false));
-        protectFromFall(player, 8000);
-
-        World world = player.getWorld();
-        world.spawnParticle(Particle.CLOUD, player.getLocation(), 40, 0.5, 0.1, 0.5, 0.1);
-        world.playSound(player.getLocation(), Sound.ENTITY_ENDER_DRAGON_FLAP, 2f, 1.2f);
-    }
-
-    // ---------------------------------------------------------------- cyclone
-
-    @Override
-    String shieldName() {
-        return "Cyclone";
-    }
-
-    @Override
-    int shieldTicks() {
-        return CYCLONE_TICKS;
-    }
-
-    @Override
-    long shieldCooldownMs() {
-        return CYCLONE_COOLDOWN_MS;
-    }
-
-    @Override
-    void shieldStart(Player player) {
-        player.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, CYCLONE_TICKS + 10, 1, false, false));
-        player.addPotionEffect(new PotionEffect(PotionEffectType.SLOW_FALLING, CYCLONE_TICKS + 10, 0, false, false));
-        protectFromFall(player, (CYCLONE_TICKS + 10) * 50L + 3000);
-        player.getWorld().playSound(player.getLocation(), Sound.ENTITY_ENDER_DRAGON_FLAP, 1.5f, 0.7f);
-    }
-
-    @Override
-    void shieldEnd(Player player) {
-        player.removePotionEffect(PotionEffectType.SPEED);
-        player.removePotionEffect(PotionEffectType.SLOW_FALLING);
-    }
-
-    @Override
-    void shieldTick(Player player, int tick) {
-        Location center = player.getLocation();
-        World world = player.getWorld();
-        double t = tick * 0.35;
-
-        // Three arms of wind spiralling up around you
-        for (int arm = 0; arm < 3; arm++) {
-            for (int h = 0; h < 6; h++) {
-                double a = t * 1.5 + arm * (Math.PI * 2 / 3) + h * 0.5;
-                double r = 0.8 + h * 0.45;
-                world.spawnParticle(Particle.CLOUD,
-                        center.getX() + Math.cos(a) * r, center.getY() + h * 0.5, center.getZ() + Math.sin(a) * r,
-                        1, 0, 0, 0, 0);
-            }
-        }
-
-        // Shove everything nearby away from you, and cut them every half second
-        if (tick % 5 == 0) {
-            boolean damageNow = tick % CYCLONE_DAMAGE_INTERVAL_TICKS == 0;
-            for (LivingEntity target : Util.inRadius(center, CYCLONE_RADIUS, player)) {
-                if (damageNow) plugin.abilityDamage(target, CYCLONE_DAMAGE, player);
-                Vector away = Util.flat(target.getLocation().toVector().subtract(center.toVector()));
-                target.setVelocity(away.multiply(0.9).setY(0.3));
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------- tornado
-
-    @Override
-    void ultimate(Player player) {
-        if (!plugin.cooldowns().tryUse(player, "wind:tornado", TORNADO_COOLDOWN_MS, "Tornado")) return;
-
-        Location center = Util.groundTarget(player, TORNADO_RANGE);
-        World world = center.getWorld();
-        world.playSound(center, Sound.ENTITY_ENDER_DRAGON_FLAP, 3f, 0.5f);
-
-        new BukkitRunnable() {
-            int tick = 0;
-
-            @Override
-            public void run() {
-                if (tick >= TORNADO_TICKS) {
-                    cancel();
-                    return;
-                }
-
-                // The funnel
-                for (double h = 0; h <= 8; h += 0.5) {
-                    double r = 0.6 + h * 0.45;
-                    double a = tick * 0.5 + h * 0.9;
-                    for (int k = 0; k < 2; k++) {
-                        double ang = a + k * Math.PI;
-                        world.spawnParticle(Particle.CLOUD,
-                                center.getX() + Math.cos(ang) * r, center.getY() + h, center.getZ() + Math.sin(ang) * r,
-                                1, 0, 0, 0, 0);
-                    }
-                }
-                if (tick % 20 == 0) {
-                    world.playSound(center, Sound.ENTITY_ENDER_DRAGON_FLAP, 2f, 0.6f);
-                }
-
-                // Pull enemies in, spin them round and lift them
-                boolean damageNow = tick % TORNADO_DAMAGE_INTERVAL_TICKS == 0;
-                for (LivingEntity target : Util.inRadius(center.clone().add(0, 3, 0), TORNADO_RADIUS, player)) {
-                    Vector toCenter = center.toVector().subtract(target.getLocation().toVector());
-                    Vector pull = Util.flat(toCenter).multiply(0.3);
-                    Vector swirl = new Vector(-pull.getZ(), 0, pull.getX()).multiply(1.3);
-                    target.setVelocity(pull.add(swirl).setY(0.5));
-                    if (damageNow) plugin.abilityDamage(target, TORNADO_DAMAGE, player);
-                }
-                tick++;
-            }
-        }.runTaskTimer(plugin, 0L, 1L);
+    @EventHandler
+    public void onJoin(PlayerJoinEvent event) {
+        if (packServer != null) packServer.onJoin(event);
     }
 }

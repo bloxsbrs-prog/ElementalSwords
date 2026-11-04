@@ -1,35 +1,25 @@
-package com.example.elementalswords;
+# ElementalSwords settings. Edit, then restart the server.
 
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
-import org.bukkit.entity.Player;
+resource-pack:
+  # Send the elemental swords resource pack to players when they join.
+  # The pack is built into the plugin, so you don't need GitHub or any outside hosting.
+  enabled: true
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
+  # The plugin hands the pack out through its own small download server on this port.
+  # This port must be open / allocated to your server (TCP). If it's already used, pick another.
+  port: 8163
 
-/** Per-player, per-ability cooldowns. */
-final class Cooldowns {
+  # Address players download the pack from. Leave "" to automatically use the same
+  # address the player typed to join your server. Only set this if the pack doesn't show up.
+  host: ""
 
-    private final Map<UUID, Map<String, Long>> ready = new HashMap<>();
+  # true = players who decline the pack are kicked. false = they can say no.
+  force: false
 
-    /** Returns true and starts the cooldown if the ability is ready; otherwise tells the player how long is left. */
-    boolean tryUse(Player player, String key, long cooldownMs, String label) {
-        long now = System.currentTimeMillis();
-        Map<String, Long> map = ready.computeIfAbsent(player.getUniqueId(), id -> new HashMap<>());
-        long readyAt = map.getOrDefault(key, 0L);
-        if (now < readyAt) {
-            player.sendActionBar(Component.text(label + " cooldown: " + formatTime(readyAt - now), NamedTextColor.RED));
-            return false;
-        }
-        map.put(key, now + cooldownMs);
-        return true;
-    }
+  # Message shown on the download screen.
+  prompt: "Elemental Swords resource pack (adds the 3D swords)"
 
-    static String formatTime(long ms) {
-        long total = (ms + 999) / 1000;
-        long minutes = total / 60;
-        long seconds = total % 60;
-        return minutes > 0 ? minutes + "m " + seconds + "s" : seconds + "s";
-    }
-}
+  # Advanced / optional: host ElementalSwordsPack.zip yourself instead of using the built-in server.
+  # Leave "" to use the built-in one.
+  external-url: ""
+  external-sha1: ""

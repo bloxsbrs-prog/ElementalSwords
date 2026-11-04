@@ -1,36 +1,18 @@
-package com.example.elementalswords;
-
-import net.kyori.adventure.text.format.NamedTextColor;
-
-/** The five elemental swords. modelId must match the resource pack. */
-public enum SwordType {
-    FIRE("fire", "Fire Sword", NamedTextColor.GOLD, 1),
-    ICE("ice", "Frost Sword", NamedTextColor.AQUA, 2),
-    LIGHTNING("lightning", "Thunder Sword", NamedTextColor.YELLOW, 3),
-    EARTH("earth", "Earth Sword", NamedTextColor.GREEN, 4),
-    WIND("wind", "Wind Sword", NamedTextColor.WHITE, 5);
-
-    private final String id;
-    private final String displayName;
-    private final NamedTextColor color;
-    private final int modelId;
-
-    SwordType(String id, String displayName, NamedTextColor color, int modelId) {
-        this.id = id;
-        this.displayName = displayName;
-        this.color = color;
-        this.modelId = modelId;
-    }
-
-    public String id() { return id; }
-    public String displayName() { return displayName; }
-    public NamedTextColor color() { return color; }
-    public int modelId() { return modelId; }
-
-    public static SwordType byId(String id) {
-        for (SwordType type : values()) {
-            if (type.id.equalsIgnoreCase(id)) return type;
-        }
-        return null;
-    }
-}
+name: ElementalSwords
+version: 1.0.0
+main: com.example.elementalswords.ElementalSwordsPlugin
+api-version: "1.21"
+description: Five elemental swords (Fire, Frost, Thunder, Earth, Wind) with abilities and a built-in 3D resource pack.
+commands:
+  elementalsword:
+    description: Give yourself (or another player) an elemental sword
+    usage: /elementalsword <fire|ice|lightning|earth|wind|all> [player]
+    aliases: [esword, firesword]
+    permission: elementalswords.give
+permissions:
+  elementalswords.give:
+    description: Allows using /elementalsword
+    default: op
+  elementalswords.use:
+    description: Allows using the swords' abilities
+    default: true
